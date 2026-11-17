@@ -175,6 +175,25 @@ describe('thoth.id name resolution', () => {
     expect(getInstance().getResolvedName()).toBe('bob.htr');
   });
 
+  it('drops a resolution for a previous name that lands before the new lookup starts', async () => {
+    let resolveFirst;
+    resolveThothName.mockImplementationOnce(() => new Promise((resolve) => { resolveFirst = resolve; }));
+
+    const { getInstance } = renderOutput();
+
+    typeAddress(NAME);
+    await act(async () => { jest.runOnlyPendingTimers(); });
+
+    // A different name is typed, and the lookup for the first one answers
+    // before the debounce starts the lookup for the new one
+    typeAddress('bob.htr');
+    await act(async () => { resolveFirst({ name: NAME, address: ADDRESS }); });
+
+    expect(screen.queryByText(ADDRESS)).toBeNull();
+    expect(screen.getByText(/Resolving/)).toBeTruthy();
+    expect(getInstance().getResolvedName()).toBeNull();
+  });
+
   it('clears the resolution when the name is replaced by an address', async () => {
     resolveThothName.mockResolvedValue({ name: NAME, address: ADDRESS });
     const { getInstance } = renderOutput();

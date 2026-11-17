@@ -159,6 +159,8 @@ class OutputsWrapper extends React.Component {
       const alreadyResolved = this.state.status === NAME_RESOLUTION_STATUS.RESOLVED
         && this.state.name === name;
       if (!alreadyResolved) {
+        // A lookup still in flight for a previous name must not land on this one
+        this.resolutionSeq += 1;
         this.setState({ status: NAME_RESOLUTION_STATUS.LOADING, name, address: null, error: null });
       }
       this.debouncedResolveName(name);
