@@ -362,7 +362,12 @@ function readContractCache(contextKey) {
 }
 
 function writeContractCache(contextKey, contractIds) {
-  const cache = LOCAL_STORE.getItem(THOTH_ID_CONTRACTS_KEY) || {};
-  cache[contextKey] = { contractIds, updatedAt: Date.now() };
-  LOCAL_STORE.setItem(THOTH_ID_CONTRACTS_KEY, cache);
+  try {
+    const cache = LOCAL_STORE.getItem(THOTH_ID_CONTRACTS_KEY) || {};
+    cache[contextKey] = { contractIds, updatedAt: Date.now() };
+    LOCAL_STORE.setItem(THOTH_ID_CONTRACTS_KEY, cache);
+  } catch (e) {
+    // The cache only spares later sessions a discovery: the Sdk already holds
+    // the map, so a storage failure must not fail the lookup
+  }
 }
