@@ -6,23 +6,53 @@
  */
 
 // Modules to control application life and create native browser window
-const { app, BrowserWindow, Tray, Menu, dialog, ipcMain } = require('electron')
+const { app, BrowserWindow, Tray, Menu, dialog, ipcMain, session } = require('electron')
 const contextMenu = require('./contextMenu')
 const Sentry = require('@sentry/electron')
+const { ElectronOfflineNetTransport } = require('@sentry/electron/main')
+const fs = require('fs');
 const url = require('url');
 const path = require('path');
 const constants = require('./constants');
 const { instance: Ledger } = require('./ledger');
+const { ledgerMethods } = require('./bridge');
+const { installBrotliGuard } = require('./brotliGuard');
+const {
+  CONSENT_CHANNEL,
+  createConsentStore,
+  createConsentHandler,
+  gateTransport,
+} = require('./sentryConsent');
+
+// Consent read from the previous run gates everything main sends, including
+// crash dumps from that run, which upload before any window has loaded.
+const sentryConsent = createConsentStore(
+  path.join(app.getPath('userData'), 'sentry-consent.json'),
+  fs,
+);
 
 Sentry.init({
   dsn: constants.SENTRY_DSN,
-  release: constants.versionNumber
+  release: constants.versionNumber,
+  transport: gateTransport(ElectronOfflineNetTransport, sentryConsent.isEnabled),
 })
+
+// preload.js reports the user's choice on every load and on every change.
+// The top-level @sentry/electron export has no flush; use the client's.
+const applySentryConsent = createConsentHandler(
+  sentryConsent,
+  () => Sentry.getCurrentHub().getClient()?.flush(2000),
+);
+ipcMain.on(CONSENT_CHANNEL, (_event, enabled) => {
+  applySentryConsent(enabled);
+});
 
 let tray = null
 let iconOS = null;
 let trayIcon = null;
 let msgCheck = false;
+// Set once the app is quitting, so the systray close handler lets the window go.
+let quitting = false;
 // We need to save the event that brought the check message from the renderer process, in order to send back to it
 let msgCheckEvent = null;
 
@@ -50,6 +80,8 @@ contextMenu({
 let mainWindow
 
 function createWindow () {
+  installBrotliGuard(session.defaultSession);
+
   // Create the browser window.
   mainWindow = new BrowserWindow({
     show: false,
@@ -57,8 +89,13 @@ function createWindow () {
     height: 768,
     icon: path.join(__dirname, iconOS),
     webPreferences: {
-      nodeIntegration: true,
-      contextIsolation: false,
+      // No Node in the renderer; it reaches main only through the
+      // contextBridge API in preload.js (window.electronAPI).
+      nodeIntegration: false,
+      contextIsolation: true,
+      // sandbox stays off so the preload can still use Node (require/process)
+      // for the bridge and Sentry — enabling it is a follow-up.
+      sandbox: false,
       preload: path.join(__dirname, 'preload.js')
     }
   })
@@ -148,7 +185,7 @@ function createWindow () {
   };
 
   mainWindow.on('close', (e) => {
-    if (tray !== null && !tray.isDestroyed()) {
+    if (!quitting && tray !== null && !tray.isDestroyed()) {
       e.preventDefault()
       // In case the user is using systray we don't close the app, just hide it
       if (!msgCheck){
@@ -168,6 +205,8 @@ function createWindow () {
 
   ipcMain.on('app:clear_storage_success', () => {
     console.log('Data reset success. Closing window...');
+    // The reset cleared the renderer's consent; main's copy goes with it.
+    sentryConsent.setEnabled(false);
     mainWindow.close();
   });
 
@@ -226,7 +265,8 @@ const getMenu = (firstItem) => {
       label: 'Exit',
       type: 'normal',
       click() {
-        app.exit()
+        // app.exit() would skip the quit events, so Sentry never ends the session.
+        app.quit()
       }
     }
   ])
@@ -236,6 +276,10 @@ function startSystray() {
   tray = new Tray(path.join(__dirname, trayIcon));
   tray.setContextMenu(getMenu(systrayMenuItemHide));
 }
+
+app.on('before-quit', () => {
+  quitting = true;
+});
 
 // Quit when all windows are closed.
 app.on('window-all-closed', function () {
@@ -253,24 +297,6 @@ app.on('activate', function () {
     createWindow()
   }
 })
-
-/**
- * This dict contains all methods available on public/ledger.js and the corresponding event
- * to be sent when we get a reply from ledger. Eg: we receive the event 'ledger:getVersion' and
- * call Ledger.getVersion(). When we get the reply from ledger, we send the event 'ledger:version'
- */
-const ledgerMethods = {
-  'getVersion': 'version',
-  'getPublicKeyData': 'publicKeyData',
-  'checkAddress': 'address',
-  'sendTx': 'txSent',
-  'getSignatures': 'signatures',
-  'signToken': 'tokenSignature',
-  'sendTokens': 'tokenDataSent',
-  'verifyTokenSignature': 'tokenSignatureValid',
-  'verifyManyTokenSignatures': 'manyTokenSignatureValid',
-  'resetTokenSignatures': 'tokenSignatureReset',
-}
 
 function addLedgerListeners(mainWindow) {
   for (const method in ledgerMethods) {
