@@ -34,7 +34,7 @@ jest.mock('../../utils/thothId', () => {
   return {
     THOTH_ID_ERROR: THOTH_ID_ERROR_MOCK,
     normalizeThothName: normalize,
-    isThothIdEnabled: (network) => network === 'testnet',
+    isThothIdEnabled: (network) => ['testnet', 'mainnet'].includes(network),
     isThothIdName: (value) => /^[a-z0-9][a-z0-9_-]*\.[a-z0-9]{2,20}$/.test(normalize(value)),
     resolveThothName: jest.fn(),
   };
@@ -210,8 +210,8 @@ describe('thoth.id name resolution', () => {
     expect(getInstance().getResolvedName()).toBeNull();
   });
 
-  it('does not resolve names outside testnet', async () => {
-    const { getInstance } = renderOutput('mainnet');
+  it('does not resolve names on a network without registries', async () => {
+    const { getInstance } = renderOutput('privatenet');
 
     typeAddress(NAME);
     await flushResolution();
